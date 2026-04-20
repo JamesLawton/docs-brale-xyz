@@ -5,19 +5,22 @@ sidebar_label: 'Polygon Embedded Wallets'
 ---
 
 <p class="intro-subheading">
-  Integrate Polygon Embedded Wallets with Brale to give users self-custodial wallets that can hold,
-  send, and receive stablecoins—built directly into your app.
+  Use Polygon Embedded Wallets as the wallet layer in your Brale integration. Users get
+  self-custodial smart wallets built into your app; Brale handles the rest.
 </p>
 
-This guide walks through integrating [Polygon Embedded Wallets](https://docs.polygon.technology/wallets/quickstart) with Brale's stablecoin infrastructure. Polygon handles wallet creation, authentication, and signing. Brale handles regulated stablecoin issuance, onramps, payouts, and offramps.
+This guide mirrors the Brale integration flow with a Polygon Embedded Wallet replacing the wallet
+provider. The Brale API calls—authentication, address registration, transfers, and offramps—are
+identical regardless of which wallet you use. Polygon handles wallet creation, user authentication,
+and transaction signing; Brale handles regulated stablecoin issuance and transfer orchestration.
 
-The workflow follows these steps:
+The integration follows these steps:
 
 1. Polygon Embedded Wallets provisions a smart contract wallet for the user
-2. Register that wallet's address with Brale as an external Address
+2. Register that wallet's on-chain address with Brale as an external Address
 3. Brale returns an `address_id` for use in transfers
-4. Use the `address_id` as a transfer source or destination
-5. Sign outbound transactions from the Polygon wallet before broadcasting on-chain
+4. Use the `address_id` as a transfer source or destination in Brale
+5. Sign outbound transactions through the Polygon wallet before broadcasting on-chain
 
 ## What is Polygon Embedded Wallets?
 
@@ -29,9 +32,9 @@ wallet is created automatically on first login.
 Key benefits:
 
 - **Non-custodial**: Private keys are secured in AWS Nitro Enclaves using threshold cryptography. Neither Sequence nor Polygon holds user keys.
-- **Smart contract wallets**: Built on Sequence's Merkleized wallet architecture supporting gas sponsorship and Smart Sessions.
-- **Frictionless onboarding**: One-click wallet creation via social login or email OTP.
-- **EVM-compatible**: Works on Polygon PoS and all other supported EVM chains. Same address across networks.
+- **Smart contract wallets**: Built on Sequence's Merkleized wallet architecture with support for gas sponsorship and Smart Sessions.
+- **Frictionless onboarding**: One-click wallet creation via social login or email OTP—no prior crypto experience required.
+- **EVM-compatible**: Works on Polygon PoS and other supported EVM chains. Same wallet address across networks.
 
 ## Prerequisites
 
@@ -53,7 +56,7 @@ curl --request POST \
   --data grant_type=client_credentials
 ```
 
-Store the returned `access_token` and refresh it before expiration (tokens expire after 60 minutes). Then retrieve your `account_id`:
+Store the returned `access_token` and refresh it before expiration. Then retrieve your `account_id`:
 
 <HTTPMethod method="GET" endpoint="https://api.brale.xyz/accounts" />
 
@@ -68,22 +71,16 @@ Store the returned `access_token` and refresh it before expiration (tokens expir
 }
 ```
 
-Use your primary account's `id` (or a managed customer account's `id`) for all subsequent requests.
+## Obtain the Wallet Address
 
-## Set Up Polygon Embedded Wallets
-
-Install the SDK and wrap your React app with the `SequenceConnect` provider:
+Install the Polygon Embedded Wallets SDK and wrap your React app with the `SequenceConnect` provider:
 
 ```bash
 pnpm install @0xsequence/connect@6 wagmi viem
 ```
 
 ```tsx
-import {
-  SequenceConnect,
-  createConfig,
-  type SequenceConnectConfig,
-} from "@0xsequence/connect";
+import { SequenceConnect, createConfig, type SequenceConnectConfig } from "@0xsequence/connect";
 
 const config: SequenceConnectConfig = createConfig({
   projectAccessKey: process.env.NEXT_PUBLIC_PROJECT_ACCESS_KEY!,
@@ -102,41 +99,24 @@ export const App = () => (
 );
 ```
 
-## Obtain the Wallet Address
-
-Add a connect button using the `useOpenConnectModal` hook. A wallet is provisioned automatically
-on first login—the user picks their preferred auth method (Google, Apple, email OTP, or passkey).
+Open the sign-in modal with `useOpenConnectModal`. A wallet is provisioned automatically on first
+login. Once connected, read the address from wagmi's `useAccount` hook:
 
 ```tsx
 import { useOpenConnectModal } from "@0xsequence/connect";
-import { useAccount, useDisconnect } from "wagmi";
+import { useAccount } from "wagmi";
 
-const ConnectButton = () => {
-  const { address, isConnected } = useAccount();
-  const { disconnect } = useDisconnect();
-  const { setOpenConnectModal } = useOpenConnectModal();
+const { address, isConnected } = useAccount();
+const { setOpenConnectModal } = useOpenConnectModal();
 
-  if (isConnected) {
-    return (
-      <div>
-        <p>Connected: {address}</p>
-        <button onClick={() => disconnect()}>Disconnect</button>
-      </div>
-    );
-  }
-
-  return (
-    <button onClick={() => setOpenConnectModal(true)}>Connect Wallet</button>
-  );
-};
+// address is the on-chain wallet address — pass this to Brale
 ```
-
-Once connected, `address` from `useAccount()` is the on-chain wallet address you will register with Brale.
 
 ## Register the Polygon Wallet in Brale
 
-Create an external address in Brale using the user's Polygon wallet address. Include an
-`Idempotency-Key` to safely retry the request without creating duplicates.
+Register the user's Polygon wallet address with Brale as an external Address. This is the same
+call used for any external wallet provider. Include an `Idempotency-Key` to safely retry without
+creating duplicates.
 
 <HTTPMethod method="POST" endpoint="https://api.brale.xyz/accounts/{ACCOUNT_ID}/addresses/external" />
 
@@ -145,7 +125,7 @@ curl --request POST \
   --url https://api.brale.xyz/accounts/${ACCOUNT_ID}/addresses/external \
   --header 'Authorization: Bearer ${ACCESS_TOKEN}' \
   --header 'Content-Type: application/json' \
-  --header 'Idempotency-Key: '$(uuidgen) \
+  --header "Idempotency-Key: $(uuidgen)" \
   --data '{
     "name": "User Polygon Wallet",
     "wallet_address": "0xabc123...",
@@ -159,22 +139,20 @@ curl --request POST \
 }
 ```
 
-Store the returned `id` as the `address_id` for this user. You will use it as a transfer source or
-destination going forward.
+Store the returned `id` as the `address_id` for this user. Use it as the source or destination in
+all Brale transfers for this user going forward.
 
 :::info
-If the same wallet address is valid on multiple EVM chains supported by Brale (e.g., `polygon` and
-`ethereum`), you can include all of them in `transfer_types` in a single registration. See
-[Addresses](/key-concepts/addresses) for the full list of supported transfer types.
+If the wallet address is valid across multiple EVM chains supported by Brale (e.g., `polygon` and
+`ethereum`), include all of them in `transfer_types` in a single registration.
 :::
 
 ## Onramp: Fund the Wallet with Stablecoins
 
-Use Brale's Transfers API to send stablecoins to the user's Polygon wallet.
+The onramp flows are identical to any other Brale integration—use the Polygon wallet's `address_id`
+as the destination.
 
 ### Wire to Stablecoin
-
-Send fiat via wire and have the stablecoins land directly in the Polygon wallet.
 
 <HTTPMethod method="POST" endpoint="https://api.brale.xyz/accounts/{ACCOUNT_ID}/transfers" />
 
@@ -197,8 +175,6 @@ Send fiat via wire and have the stablecoins land directly in the Polygon wallet.
 ```
 
 ### Stablecoin Payout to Wallet
-
-Send stablecoins from your Brale custodial balance directly to the user's Polygon wallet.
 
 <HTTPMethod method="POST" endpoint="https://api.brale.xyz/accounts/{ACCOUNT_ID}/transfers" />
 
@@ -224,17 +200,17 @@ Send stablecoins from your Brale custodial balance directly to the user's Polygo
 ## Sign and Send from the Polygon Wallet
 
 All on-chain activity initiated from the user's Polygon wallet must be signed through the Polygon
-Embedded Wallets SDK. Use wagmi's `useWriteContract` hook—the Sequence wallet handles signing and
-broadcast transparently.
+Embedded Wallets SDK. Use wagmi's `useWriteContract` hook — signing and broadcast are handled
+automatically by the Sequence wallet underneath.
 
-The example below sends USDC from the user's Polygon wallet to a recipient address:
+The example below transfers USDC from the user's Polygon wallet, which you would use to send funds
+to a Brale custodial address for offramp or to any other recipient:
 
 ```tsx
-import { useWriteContract, useAccount } from "wagmi";
+import { useWriteContract } from "wagmi";
 import { parseUnits } from "viem";
 
-// USDC on Polygon PoS
-const USDC_ADDRESS = "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359";
+const USDC_ADDRESS = "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"; // USDC on Polygon PoS
 
 const erc20Abi = [
   {
@@ -249,31 +225,22 @@ const erc20Abi = [
   },
 ] as const;
 
-const SendUSDC = ({ recipientAddress }: { recipientAddress: `0x${string}` }) => {
-  const { writeContract, isPending } = useWriteContract();
+const { writeContract } = useWriteContract();
 
-  const send = () =>
-    writeContract({
-      address: USDC_ADDRESS,
-      abi: erc20Abi,
-      functionName: "transfer",
-      args: [recipientAddress, parseUnits("10", 6)], // 10 USDC
-    });
-
-  return (
-    <button onClick={send} disabled={isPending}>
-      {isPending ? "Sending..." : "Send 10 USDC"}
-    </button>
-  );
-};
+writeContract({
+  address: USDC_ADDRESS,
+  abi: erc20Abi,
+  functionName: "transfer",
+  args: [recipientAddress, parseUnits("10", 6)], // 10 USDC (6 decimals)
+});
 ```
 
 ## Offramp: Convert Stablecoins to Fiat
 
-To convert stablecoins held in a Polygon wallet back to fiat:
+Converting stablecoins from a Polygon wallet back to fiat uses the same Brale offramp flow as any
+other external wallet:
 
-1. **Locate your Brale custodial deposit address** — fetch internal addresses for your account and
-   find the one with `transfer_type: polygon`.
+1. **Find your Brale internal deposit address** for Polygon:
 
 <HTTPMethod method="GET" endpoint="https://api.brale.xyz/accounts/{ACCOUNT_ID}/addresses?type=internal&transfer_type=polygon" />
 
@@ -291,16 +258,15 @@ To convert stablecoins held in a Polygon wallet back to fiat:
 }
 ```
 
-2. **Send stablecoins from the Polygon wallet to the Brale custodial address** using the signing
-   flow above, with `0xcdEA...` as the recipient.
+2. **Send stablecoins from the Polygon wallet to the Brale custodial address** using the
+   `writeContract` signing flow above.
 
 3. Once the deposit is confirmed on-chain, initiate the stablecoin-to-fiat offramp transfer through
    Brale. See [Stablecoin to Fiat (Offramp)](/guides/stablecoin-to-fiat-offramp) for the full flow.
 
 :::info
 Balance queries via `GET /balances` are supported only for `type=internal` (Brale-custodied)
-addresses. For external Polygon wallet balances, read directly from the chain using the wallet
-address.
+addresses. For external Polygon wallet balances, read directly from the chain.
 :::
 
 ## Reference Resources
