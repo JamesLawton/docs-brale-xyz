@@ -1,0 +1,224 @@
+---
+sidebar_position: 10
+title: 'Polygon Embedded Wallets'
+sidebar_label: 'Polygon Embedded Wallets'
+---
+
+<p class="intro-subheading">
+  Combine Polygon Embedded Wallets with Brale's stablecoin rails to give users self-custodial
+  wallets that can hold, send, and receive stablecoins—built directly into your app.
+</p>
+
+Polygon Embedded Wallets (powered by Sequence) handles wallet creation, authentication, and key
+management. Brale handles regulated stablecoin issuance, transfers, and payouts. Together, you can
+build a non-custodial stablecoin experience where users own their funds and your platform never
+holds customer assets.
+
+:::info
+This guide covers the Polygon Embedded Wallet integration using the Sequence WaaS SDK. Wallets
+settle on Polygon PoS, which Brale supports for stablecoin transfers.
+:::
+
+## What is Polygon Embedded Wallets?
+
+Polygon Embedded Wallets is a non-custodial wallet infrastructure product that lets you embed
+smart contract wallets directly into your application—no browser extension required. Users
+authenticate with familiar methods (Google, Apple, email OTP, or passkeys) and receive a
+fully-functional EVM wallet without ever managing a seed phrase.
+
+Key properties:
+
+- **Non-custodial**: Private keys are secured in AWS Nitro Enclaves using threshold cryptography. Neither Sequence nor Polygon holds user keys.
+- **Account abstraction**: Wallets are ERC-4337 smart contract accounts supporting gas sponsorship and batched transactions.
+- **Frictionless onboarding**: One-click wallet creation via social login or email OTP—users don't need to know anything about crypto.
+- **EVM-compatible**: Works on Polygon PoS and all other supported EVM chains.
+
+## Prerequisites
+
+Before you begin, you will need:
+
+- A [Brale account](https://brale.xyz) with API access and at least one supported stablecoin configured
+- A [Polygon developer account](https://docs.polygon.technology) with an Embedded Wallets project created
+- Your `projectAccessKey` and `waasConfigKey` from the Polygon developer dashboard
+- Node.js 18+ and a package manager (npm, yarn, or pnpm)
+
+## Steps
+
+### 1. Install the SDK
+
+```bash
+npm install @0xsequence/waas
+```
+
+For React applications with full connect support:
+
+```bash
+npm install @0xsequence/waas @0xsequence/connect wagmi viem @tanstack/react-query
+```
+
+### 2. Initialize the Embedded Wallet Client
+
+Store your credentials in environment variables.
+
+```typescript
+import { SequenceWaaS } from "@0xsequence/waas";
+
+const sequence = new SequenceWaaS({
+  projectAccessKey: process.env.POLYGON_PROJECT_ACCESS_KEY!,
+  waasConfigKey: process.env.POLYGON_WAAS_CONFIG_KEY!,
+  network: "polygon",
+});
+```
+
+### 3. Authenticate the User and Create a Wallet
+
+Wallets are created automatically on first authentication. The same user identity always resolves
+to the same wallet address.
+
+**Social login (Google or Apple):**
+
+```typescript
+// idToken is the JWT returned by your OAuth provider
+const session = await sequence.signIn({ idToken }, "My App Session");
+```
+
+**Email OTP:**
+
+```typescript
+// Step 1 — send the OTP
+await sequence.signIn({ email: "user@example.com" });
+
+// Step 2 — after the user enters their code, complete sign-in
+const session = await sequence.signIn({ email: "user@example.com", code: "123456" });
+```
+
+**Check sign-in state:**
+
+```typescript
+if (await sequence.isSignedIn()) {
+  // User is authenticated and wallet is ready
+}
+```
+
+### 4. Retrieve the Wallet Address
+
+Once authenticated, fetch the wallet address to use as the on-chain destination for Brale payouts.
+
+```typescript
+const walletAddress = await sequence.getAddress();
+// "0xabc123..." — a standard 42-character EVM address
+```
+
+### 5. Register the Wallet Address with Brale
+
+Register the user's Embedded Wallet as an external address in Brale so it can receive stablecoin
+transfers and payouts.
+
+<HTTPMethod method="POST" endpoint="https://api.brale.xyz/accounts/{account_id}/addresses" />
+
+```json title="Request"
+{
+  "name": "User Polygon Embedded Wallet",
+  "address": "0xabc123...",
+  "transfer_type": "polygon"
+}
+```
+
+```json title="Response"
+{
+  "id": "2VcUIonJeVQzFoBuC7LdFT0dRe4",
+  "name": "User Polygon Embedded Wallet",
+  "address": "0xabc123...",
+  "transfer_type": "polygon",
+  "type": "external"
+}
+```
+
+Store the returned `id` alongside the user's record—you will use this Brale address ID to initiate
+all future transfers to this wallet.
+
+### 6. Send Stablecoins to the Wallet
+
+Use the Brale Transfers API to send stablecoins from your custodial balance to the user's Embedded
+Wallet. The transfer settles on Polygon PoS and the user receives funds directly in their
+self-custodial wallet.
+
+<HTTPMethod method="POST" endpoint="https://api.brale.xyz/accounts/{account_id}/transfers" />
+
+```json title="Request"
+{
+  "amount": {
+    "value": "50",
+    "currency": "USD"
+  },
+  "source": {
+    "address_id": "<your_brale_custodial_address_id>",
+    "value_type": "USDC",
+    "transfer_type": "polygon"
+  },
+  "destination": {
+    "address_id": "2VcUIonJeVQzFoBuC7LdFT0dRe4",
+    "value_type": "USDC",
+    "transfer_type": "polygon"
+  }
+}
+```
+
+```json title="Response"
+{
+  "id": "transfer_789",
+  "status": "pending",
+  "amount": {
+    "value": "50",
+    "currency": "USD"
+  },
+  "source": {
+    "address_id": "<your_brale_custodial_address_id>",
+    "value_type": "USDC",
+    "transfer_type": "polygon"
+  },
+  "destination": {
+    "address_id": "2VcUIonJeVQzFoBuC7LdFT0dRe4",
+    "value_type": "USDC",
+    "transfer_type": "polygon"
+  }
+}
+```
+
+The transfer moves from `pending` to `completed` once confirmed on Polygon PoS, typically within a
+few seconds.
+
+### 7. Send from the User's Wallet (Optional)
+
+If your app needs users to send stablecoins out of their Embedded Wallet—such as making a payment
+or returning funds—use the Sequence SDK to sign and submit the transaction.
+
+```typescript
+import { isSentTransactionResponse } from "@0xsequence/waas";
+
+// USDC contract on Polygon PoS
+const USDC_ADDRESS = "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359";
+
+const tx = await sequence.sendERC20({
+  chainId: 137,
+  token: USDC_ADDRESS,
+  to: recipientAddress,
+  value: "10000000", // 10 USDC (6 decimals)
+});
+
+if (isSentTransactionResponse(tx)) {
+  console.log("Transaction confirmed:", tx.txHash);
+}
+```
+
+## Related API References
+
+[`POST /accounts/{account_id}/addresses`](/api/create-address) - Register an external wallet address
+
+[`GET /addresses`](/api/list-addresses) - Fetch all registered addresses for an account
+
+[`POST /accounts/{account_id}/transfers`](/api/create-transfer) - Send stablecoins to a wallet
+
+[`GET /accounts/{account_id}/transfers/:id`](/api/get-transfer) - Check the status of a transfer
+
+[`GET /balances`](/api/get-address-balance) - View stablecoin balances across wallets
